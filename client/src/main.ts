@@ -1,131 +1,134 @@
 import './style.css';
 import { Engine } from './game/core/Engine.ts';
-import { MouseButton } from './game/core/InputManager.ts';
+import { World } from './game/world/World.ts';
+import { Camera } from './game/render/Camera.ts';
+import { Renderer } from './game/render/Renderer.ts';
+import { Vector2 } from './game/math/Vector2.ts';
+import { worldToTile, tileToChunk } from './game/math/Coordinates.ts';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
   throw new Error('Root #app container not found in DOM');
 }
 
-// Create and mount the Canvas
+// 1. Create and mount Canvas
 const canvas = document.createElement('canvas');
 canvas.id = 'game-canvas';
 app.appendChild(canvas);
 
-// Initialize Engine
+// 2. Initialize Engine
 const engine = new Engine(canvas);
 
-// Simple test entity to verify fixed-timestep updates and keyboard controls
-let testBox = {
-  x: window.innerWidth / 2,
-  y: window.innerHeight / 2,
-  size: 32,
-  speed: 250,
-  color: '#4ade80'
+// 3. Initialize World and generate test landscape
+const world = new World();
+world.generateTestWorld(-4, 14, 0, 7);
+
+// 4. Initialize Camera & Viewport Culling Renderer
+const camera = new Camera(canvas.width, canvas.height);
+// Focus camera at surface level spawn
+const spawnPos = new Vector2(0, 520);
+camera.snapTo(spawnPos.x, spawnPos.y);
+camera.follow(spawnPos);
+
+const renderer = new Renderer(world, camera);
+
+// Keep camera viewport synced with canvas resize
+engine.onResize = (width: number, height: number) => {
+  camera.resize(width, height);
 };
 
-// Fixed-timestep 60Hz physics update callback
+// 5. Fixed-Timestep 60Hz Physics & Camera Update
 engine.onUpdate = (dt: number) => {
-  // Move test box with WASD / Arrow keys
+  const moveSpeed = 300;
+
+  // Move camera target with WASD or Arrow Keys for test exploration
   if (engine.input.moveLeft) {
-    testBox.x -= testBox.speed * dt;
+    spawnPos.x -= moveSpeed * dt;
   }
   if (engine.input.moveRight) {
-    testBox.x += testBox.speed * dt;
+    spawnPos.x += moveSpeed * dt;
   }
   if (engine.input.isKeyDown('KeyW') || engine.input.isKeyDown('ArrowUp')) {
-    testBox.y -= testBox.speed * dt;
+    spawnPos.y -= moveSpeed * dt;
   }
   if (engine.input.crouch) {
-    testBox.y += testBox.speed * dt;
+    spawnPos.y += moveSpeed * dt;
   }
 
-  // Change color on mouse click
-  if (engine.input.isMouseDown(MouseButton.LEFT)) {
-    testBox.color = '#f87171'; // Red
-  } else if (engine.input.isMouseDown(MouseButton.RIGHT)) {
-    testBox.color = '#60a5fa'; // Blue
-  } else {
-    testBox.color = '#4ade80'; // Green
+  // Handle Zoom via Mouse Wheel
+  if (engine.input.wheelDeltaY !== 0) {
+    const zoomStep = engine.input.wheelDeltaY > 0 ? -0.2 : 0.2;
+    camera.setZoom(camera.zoom + zoomStep);
   }
+
+  // Toggle Grid with 'G' key
+  if (engine.input.isKeyJustPressed('KeyG')) {
+    renderer.showTileGrid = !renderer.showTileGrid;
+  }
+
+  // Toggle Chunk Borders with 'B' key
+  if (engine.input.isKeyJustPressed('KeyB')) {
+    renderer.showChunkBorders = !renderer.showChunkBorders;
+  }
+
+  // Update Camera lerp
+  camera.update(dt);
 };
 
-// Variable timestep render callback
+// 6. Variable-Timestep Render
 engine.onRender = (ctx: CanvasRenderingContext2D, _alpha: number) => {
-  const width = canvas.width;
-  const height = canvas.height;
+  // Render World and atmospheric sky with Viewport Culling
+  renderer.render(ctx);
 
-  // 1. Clear background
-  ctx.fillStyle = '#0f172a'; // Deep slate
-  ctx.fillRect(0, 0, width, height);
+  // Render Reticle on Target Tile under Mouse
+  const mouseScreen = engine.input.mouseScreenPos;
+  // Convert mouse screen to world position
+  const mouseWorldX = camera.position.x + (mouseScreen.x - canvas.width / 2) / camera.zoom;
+  const mouseWorldY = camera.position.y + (mouseScreen.y - canvas.height / 2) / camera.zoom;
+  const hoverTile = worldToTile(mouseWorldX, mouseWorldY);
+  const hoverChunk = tileToChunk(hoverTile.tx, hoverTile.ty);
 
-  // 2. Draw subtle background coordinate grid
-  ctx.strokeStyle = '#1e293b';
-  ctx.lineWidth = 1;
-  const gridSize = 32;
-  ctx.beginPath();
-  for (let x = 0; x < width; x += gridSize) {
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-  }
-  for (let y = 0; y < height; y += gridSize) {
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
-  }
-  ctx.stroke();
-
-  // 3. Draw test entity
-  ctx.fillStyle = testBox.color;
-  ctx.fillRect(
-    Math.round(testBox.x - testBox.size / 2),
-    Math.round(testBox.y - testBox.size / 2),
-    testBox.size,
-    testBox.size
-  );
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(
-    Math.round(testBox.x - testBox.size / 2),
-    Math.round(testBox.y - testBox.size / 2),
-    testBox.size,
-    testBox.size
-  );
-
-  // 4. Draw mouse crosshair / reticle
-  const mouse = engine.input.mouseScreenPos;
+  // Draw tile selection highlight in world space
+  camera.applyTransform(ctx);
   ctx.strokeStyle = '#facc15';
   ctx.lineWidth = 1.5;
-  ctx.strokeRect(Math.round(mouse.x - 8), Math.round(mouse.y - 8), 16, 16);
-  ctx.beginPath();
-  ctx.moveTo(mouse.x, mouse.y - 12);
-  ctx.lineTo(mouse.x, mouse.y + 12);
-  ctx.moveTo(mouse.x - 12, mouse.y);
-  ctx.lineTo(mouse.x + 12, mouse.y);
-  ctx.stroke();
+  ctx.strokeRect(hoverTile.tx * 16, hoverTile.ty * 16, 16, 16);
+  camera.restoreTransform(ctx);
 
-  // 5. Draw Diagnostics HUD
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-  ctx.fillRect(10, 10, 310, 140);
+  // 7. Render Screen-Space Diagnostics & Controls HUD
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+  ctx.fillRect(10, 10, 360, 215);
   ctx.strokeStyle = '#38bdf8';
   ctx.lineWidth = 1;
-  ctx.strokeRect(10, 10, 310, 140);
+  ctx.strokeRect(10, 10, 360, 215);
 
   ctx.fillStyle = '#38bdf8';
   ctx.font = 'bold 13px monospace';
-  ctx.fillText('⚡ TerraForge Engine Diagnostics', 20, 30);
+  ctx.fillText('⚡ TerraForge Viewport & Engine Diagnostics', 20, 30);
 
   ctx.fillStyle = '#f8fafc';
   ctx.font = '12px monospace';
-  ctx.fillText(`FPS: ${engine.diagnostics.fps} (Display Refresh)`, 20, 50);
-  ctx.fillText(`Physics Tick: ${engine.diagnostics.ticksPerSec} Hz (Fixed 60Hz)`, 20, 68);
-  ctx.fillText(`Frame Time: ${engine.diagnostics.frameTimeMs.toFixed(2)} ms`, 20, 86);
-  ctx.fillText(`Mouse Pos: (${Math.round(mouse.x)}, ${Math.round(mouse.y)})`, 20, 104);
-  
-  const leftDown = engine.input.isMouseDown(MouseButton.LEFT) ? 'L-CLICK' : '';
-  const rightDown = engine.input.isMouseDown(MouseButton.RIGHT) ? 'R-CLICK' : '';
-  ctx.fillText(`Input: WASD | ${leftDown} ${rightDown}`, 20, 122);
+  ctx.fillText(`FPS: ${engine.diagnostics.fps} | Physics: ${engine.diagnostics.ticksPerSec} Hz`, 20, 52);
+  ctx.fillText(`Frame Time: ${engine.diagnostics.frameTimeMs.toFixed(2)} ms`, 20, 70);
+  ctx.fillText(`Camera Pos: (${Math.round(camera.position.x)}, ${Math.round(camera.position.y)})`, 20, 88);
+  ctx.fillText(`Zoom: ${camera.zoom.toFixed(1)}x (Scroll Wheel to Zoom)`, 20, 106);
+
+  ctx.fillStyle = '#4ade80';
+  ctx.fillText(
+    `Visible Chunks: ${renderer.stats.renderedChunks} / ${world.loadedChunkCount} loaded`,
+    20,
+    124
+  );
+  ctx.fillText(`Visible Tiles: ${renderer.stats.renderedTiles}`, 20, 142);
+
+  ctx.fillStyle = '#cbd5e1';
+  ctx.fillText(`Hover Tile: (${hoverTile.tx}, ${hoverTile.ty}) in Chunk (${hoverChunk.cx}, ${hoverChunk.cy})`, 20, 160);
+
+  ctx.fillStyle = '#94a3b8';
+  ctx.fillText(`[WASD / Arrows] Pan Camera`, 20, 182);
+  ctx.fillText(`[G] Toggle Tile Grid  |  [B] Toggle Chunk Borders`, 20, 200);
 };
 
-// Start the game loop!
+// Start Engine
 engine.start();
-console.log('TerraForge Engine initialized and running at 60 Hz fixed timestep.');
+console.log('TerraForge World & Viewport Culling active.');
